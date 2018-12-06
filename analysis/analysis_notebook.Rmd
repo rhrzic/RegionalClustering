@@ -1,0 +1,691 @@
+---
+title: "Redrawing the borders of EU's mortality gap"
+author: "Rok Hrzic"
+output:
+  html_document:
+    df_print: paged
+---
+## Packages used
+
+```{r setup, results='hide'}
+require(tidyverse)
+require(ggplot2)
+require(viridis)
+require(eurostat)
+require(sf)
+```
+
+## Data download and import
+
+The dataset of Life tables (demo_r_mlife) is downloaded from the Eurostat website using the eurostat package. This allows us to get the data in a tidy shape. Since we are working with a large dataset, the JSON filtering options are not applicable in our case. We transform the class of the time variable to numeric for easier manipulation later on.
+
+Since we are interested in age and sex specific death rates, we also limit the dataset to this indicator. We chose to do this early on, since it vastly reduces the size of the dataset.
+
+```{r, results='markup'}
+data_raw <- get_eurostat("demo_r_mlife", time_format = "num")
+data_working <- data_raw %>% filter(indic_de == "DEATHRATE")
+glimpse(data_raw)
+```
+
+## Data cleaning
+
+Here we check whether the variables have the values we might expect (e.g. sex in categories, time in years, etc.).
+
+```{r, results='markup'}
+data_working %>% distinct(indic_de)
+data_working %>% distinct(sex)
+data_working %>% distinct(age)
+data_working %>% distinct(geo)
+data_working %>% distinct(time)
+data_working %>% summarise(min = min(values), max = max(values), median = median(values))
+```
+
+Here, we noticed that the age variable does not sort correctly because the number portion is sometimes one and other times two digits long. 
+In addition, the categories years less than 1 (Y_LT1) and 85 and above (Y_GE85) do not conform with the rest, also causing sorting trouble. For these, we simply replace the values with Y00 and Y85+.
+
+```{r, results='markup'}
+data_working <- data_working %>% mutate(age = str_replace(age, "Y_LT1", "Y00"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y_GE85", "Y85+"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y1$", "Y01"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y2$", "Y02"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y3$", "Y03"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y4$", "Y04"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y5$", "Y05"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y6$", "Y06"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y7$", "Y07"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y8$", "Y08"))
+data_working <- data_working %>% mutate(age = str_replace(age, "Y9$", "Y09"))
+
+data_working %>% summarise(min=min(age), max=max(age))
+```
+
+Since the scope of our investigation includes only current EU Member States (EU28 as of 2018), we proceed with filtering out non-EU countries.
+
+```{r, results='hide'}
+data_analysis <- filter(data_working, 
+                    !str_detect(geo, pattern = "AL"), 
+                    !str_detect(geo, pattern = "CH"), 
+                    !str_detect(geo, pattern = "IS"), 
+                    !str_detect(geo, pattern = "LI"), 
+                    !str_detect(geo, pattern = "ME"), 
+                    !str_detect(geo, pattern = "MK"), 
+                    !str_detect(geo, pattern = "NO"), 
+                    !str_detect(geo, pattern = "TR"))
+```
+
+We are interested in NUTS 2 regions, so we filter by geographic code, where we require an alphanumeric code of 4 characters.
+
+```{r, results='hide'}
+data_analysis <- data_analysis %>% filter(str_detect(geo, pattern = "^[A-Z0-9]{4}$"))
+```
+
+## Dataset completeness
+
+This leaves us with the following number of regions:
+
+```{r, results='markup'}
+data_analysis %>% select(geo) %>% n_distinct()
+```
+
+and the following completeness of the dataset per region and year:
+
+```{r, results='markup'}
+Missing <- data_analysis %>% group_by(geo, time) %>% summarise(available = sum(!is.na(values)) / length(values)) %>% arrange(desc(available))
+
+Missing %>% group_by(time) %>% summarise(regions = sum(available) / 276) %>% print(n = 27)
+
+ggplot(Missing, aes(x=time, y=geo)) +
+  geom_raster(aes(fill = available))
+```
+
+The dataset is more than 90% complete for the period after and including 2002. As expected, the plot shows that the dataset includes regions where data is missing for longer or shorter periods of time. Hence, we will need to be cognisant of these place-years during our analysis and interpretation. 
+The analysis will be performed include the data from the years 2002 onward only.
+
+## Visual Analysis
+
+Preparing the dataset for dimensionality reduction requires reshaping it (long to wide with sex_ages as variables).
+
+```{r, results='markup'}
+data_analysis_wide <- data_analysis %>% unite(col = sex_age, sex, age)
+data_analysis_wide <- data_analysis_wide %>% spread(key = sex_age, value = values)
+glimpse(data_analysis_wide)
+```
+
+We will begin the analysis with an exploration of a straight forward dimensionality reduction technique, where the sex and age are averaged out. In demographic terms, this means that we assume that all sex_age groups are equally common in the population. 
+
+The dataset provides us with averaged age specific death rates, so we select these columns. In the next step, we calculate the averages across ages.
+
+```{r, results='hide'}
+data_analysis_T <- data_analysis_wide %>% select(geo, time, starts_with("T_"))
+data_analysis_T <- data_analysis_T %>% mutate(ave_Mx = rowMeans(select(., starts_with("T_")), na.rm = TRUE)) %>% select(geo, time, ave_Mx)
+```
+
+We then plot a selection of the results (for year 2010) on a choropleth.
+
+```{r, results='hide', warning=FALSE}
+#gisco <- get_eurostat_geospatial(output_class = "sf", resolution = "03", nuts_level = "2", year = "2016", cache = TRUE)
+#gisco <- st_as_sf(gisco)
+
+require(httr)
+resp <- GET(paste0("http://ec.europa.eu/eurostat/cache/GISCO/distribution/v2/nuts/geojson/NUTS_RG_60M_2013_4326_LEVL_2.geojson"))
+gisco <- st_read(content(resp, as="text"), stringsAsFactors = FALSE, quiet = TRUE)
+
+resp <- GET(paste0("http://ec.europa.eu/eurostat/cache/GISCO/distribution/v2/nuts/geojson/NUTS_RG_60M_2013_4326_LEVL_0.geojson"))
+gisco0 <- st_read(content(resp, as="text"), stringsAsFactors = FALSE, quiet = TRUE)
+
+map0 <- data_analysis_T %>%
+  filter(time == 2010) %>%
+  inner_join(gisco, ., by = c("NUTS_ID" = "geo")) %>%
+  select(ave_Mx, geometry)
+
+ggplot(map0) + 
+  geom_sf(aes(fill = ave_Mx), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Death Rate by EU region (NUTS2) in 2010") +
+  labs(fill = "Average Death Rate")
+
+```
+
+We see the missing data as gaps in the map. Despite this, there is a noticeable deathrate from the west towards the east of Europe. Interestingly, the gradient is more gradual in the northern part of the east-west divide (Germany towards Poland and the Czech Republic) and more pronounced in the southtern part (Austria towards Slovakia and Hungary). The Romania and Bulgaria contain regions that have conspicuously the highest deathrates in the EU.
+Interestingly, we also notice certain regions of western europe with moderately high deathrates (southwestern Scotland), and regions of ex-communist or socialist countries with very low deathrates (west Slovenia). 
+
+We can proceed to examine the development of these trend in time by creating a choropleth for each of the included years (2002 - 2016).
+
+```{r, results='hide', warning=FALSE}
+map1 <- data_analysis_T %>%
+  filter(time >= 2002) %>%
+  inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+ggplot(map1) + 
+  geom_sf(aes(fill = ave_Mx), colour = "transparent", size = 0.1) +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Death Rate by EU region (NUTS2) by Year") +
+  labs(fill = "Average Death Rate")
+```
+
+The representation offers a number of insights. 
+We see that all of the EU gravitated towards lower death rates in the past 15 years, with regions from the west and the east successfully accomplishing mortality reductions.
+We can also spot that the areas with the lowest death rates have not changed much and include northern and central Spain, France, northern Italy, south Germany, Austria, along with Greece and south Sweden.
+The areas with highest mortality rates remain in the southeast with Romania and Bulgaria, and northeast in Latvia and Lithuania, while regions in the middle almost converged with their western neighbours. The maps demonstrate well how different the situation was and remains in different Member States in eastern Europe.
+We can also spot interesting areas, where regions outperformed their neighbours. In 2002, Estonia seemed to have been lagging behind Lithuania. However, in 2016, Estonia reduced the death rates to a level comparable to regions in central Germany, while Lithuania failed to improve death rates at the same pace.
+
+To drill down more, we will now compare the progress since 2002 by gender. We repeat the steps from above first for men, and then women.
+
+### Death rates in men
+
+```{r, warning=FALSE}
+data_analysis_men <- data_analysis_wide %>% select(geo, time, starts_with("M_"))
+data_analysis_men <- data_analysis_men %>% mutate(ave_Mx = rowMeans(select(., starts_with("M_")), na.rm = TRUE)) %>% select(geo, time, ave_Mx)
+
+map2 <- data_analysis_men %>%
+  filter(time >= 2002) %>%
+  inner_join(gisco, ., by = c("NUTS_ID" = "geo")) 
+
+ggplot(map2) + 
+  geom_sf(aes(fill = ave_Mx), colour = "transparent", size = 0.1) +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Male Death Rate by EU region (NUTS2) by Year") +
+  labs(fill = "Average Male Death Rate")
+
+```
+
+Here too, we see that the entire Union made substantial progress in the past 15 years. However, we can also immediately spot that the regions of highest death rates in the early 2000s are no longer in southeastern Member States, but rather in the Baltic countries, particularly Latvia. The plot also shows the remarcable progress the country made as time progressed.
+This plot also shows how the progress in reducing mortality in men had a higher pace in the middle of eastern Europe, especially in the time before 2010, while the north and south ends only recently began visibly converging. 
+
+### Death rates in women
+
+```{r}
+data_analysis_women <- data_analysis_wide %>% select(geo, time, starts_with("F_"))
+data_analysis_women <- data_analysis_women %>% mutate(ave_Mx = rowMeans(select(., starts_with("F_")), na.rm = TRUE)) %>% select(geo, time, ave_Mx)
+
+map3 <- data_analysis_women %>%
+  filter(time >= 2002) %>%
+  inner_join(gisco, ., by = c("NUTS_ID" = "geo")) 
+
+ggplot(map3) + 
+  geom_sf(aes(fill = ave_Mx), colour = "transparent", size = 0.1) +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Female Death Rate by EU region (NUTS2) by Year") +
+  labs(fill = "Average Female Death Rate")
+```
+
+Here also a general trend of progress is very apparent. 
+Taking into account the results of the previous analysis, we are not surpised to see relatively high death rates of women in southeastern EU Member States. While this disparity reduced since 2010, it is very much still apparent - even more so after seeing the progress the rest of eastern Europe made in this regard.
+
+## Dimensionality reduction
+
+Dealing with sex was straight forward given the low number of categories. However, since we are equiped with 86 age categories, we need a good way of reducing this complexity. 
+We have decided to use K-means clustering to perform this task. The algorithm will take into account all the age-specific death rates when making the determination of which regions are more similar to each other than to others. 
+To decide on the number of clusters the algorithm ought to look for, a plot of within groups sum of squares versus the number of clusters will be examined for elbows (break points) where additional clusters do not contribute much to reducing the WSS. 
+We will do this for male and female life tables separately. 
+
+First, we will perform a trial run for the year 2010.
+
+```{r}
+data_analysis_men <- data_analysis_wide %>% 
+  select(geo, time, starts_with("M_")) %>% 
+  filter(time == 2010) %>% 
+  arrange(geo)
+
+set.seed(123456789)
+
+wssplot <- function(data, nc=15, seed=1234){
+  wss <- (nrow(data)-1)*sum(apply(data,2,var))
+  for (i in 2:nc){
+    set.seed(seed)
+    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+  plot(1:nc, wss, type="b", xlab="Number of Clusters",
+       ylab="Within groups sum of squares")}
+
+fit <- data_analysis_men %>% 
+  select(M_Y00:`M_Y85+`) %>%
+  scale() %>%
+  kmeans(., centers=2, nstart=10)
+i <- order(fit$cluster)
+
+map4 <- data.frame(year = 2010, geo=data_analysis_men$geo[i], cluster=fit$cluster[i]) %>%
+  inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+ggplot(map4) + 
+  geom_sf(aes(fill = factor(cluster)), colour = "transparent") +
+    geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Clustering EU regions (NUTS2) by Male Death Rates in 2010") +
+  labs(fill = "Cluster")
+```
+
+We see that by and large, the algorithm fit the regions into those politically considered west and east of Europe. There are some interesting exceptions, however. Slovenia was classified into western Europe, as was west of Croatia and the majority of the Czech Republic.
+
+Now we perform the same task for all the included years for men.
+
+```{r}
+data_analysis_men <- data_analysis_wide %>% 
+  select(geo, time, starts_with("M_")) %>%
+  filter(time >= 2002) %>%
+  arrange(geo)
+
+for (i in unique(data_analysis_men$time)) {
+  
+#set.seed(123456789)
+
+  data_analysis_men %>%
+  filter(time == i) %>%
+  select(M_Y00:`M_Y85+`) %>%
+  scale() %>%
+  wssplot(., nc=6)
+}
+
+```
+
+The initial part of the analysis shows that in all the years, 2 clusters are the best model for our data. We now proceed with plotting the choropleths.
+
+```{r}
+
+map5 <- data.frame()
+
+for (i in unique(data_analysis_men$time)) {
+  
+set.seed(12)
+
+fit <- data_analysis_men %>%
+  filter(time == i) %>%
+  select(M_Y00:`M_Y85+`) %>%
+  scale() %>%
+  kmeans(., centers=2, nstart=50)
+
+j <- order(fit$cluster)
+
+map5 <- map5 %>% bind_rows(data.frame(time = i, geo = filter(data_analysis_men, time == i)$geo[j], cluster=as.factor(fit$cluster[j])))
+
+}
+
+map5 <- map5 %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+require(forcats)
+map5 <- map5 %>% mutate(cluster = ifelse(time %in% 2004:2012, fct_rev(cluster), cluster))
+
+
+
+ggplot(map5) + 
+  geom_sf(aes(fill = factor(cluster)), color = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Clustering EU regions (NUTS2) by Male Death Rates 2002 - 2016") +
+  labs(fill = "Cluster")
+```
+
+```{r}
+ggplot(map5) + 
+  geom_sf(aes(fill = factor(cluster)), color = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  labs(title = 'Clustering EU regions (NUTS2) by Male Death Rates {current_frame}', fill = "Cluster") +
+  transition_manual(time)
+
+```
+
+
+We see that the regions clustered into stable groups. The only exception are the regions within the Czech republic, which have moved over from being clustered with the east to now being clustered with the west.
+
+Clustering now for women.
+
+```{r}
+data_analysis_women <- data_analysis_wide %>% 
+  select(geo, time, starts_with("F_")) %>%
+  filter(time >= 2002) %>%
+  arrange(geo)
+
+for (i in unique(data_analysis_women$time)) {
+  
+set.seed(123456789)
+
+  data_analysis_women %>%
+  filter(time == i) %>%
+  select(F_Y00:`F_Y85+`) %>%
+  scale() %>%
+  wssplot(., nc=6)
+}
+```
+
+In women, the bend at 2 clusters is less pronounced, especially in the later years. However, we will nevertheless perform the clustering into 2 classes to ease comparisons with the results above.
+
+```{r}
+
+map6 <- data.frame()
+
+for (i in unique(data_analysis_women$time)) {
+  
+set.seed(123456789)
+
+fit <- data_analysis_women %>%
+  filter(time == i) %>%
+  select(F_Y00:`F_Y85+`) %>%
+  scale() %>%
+  kmeans(., centers=2, nstart=10)
+
+j <- order(fit$cluster)
+
+map6 <- map6 %>% bind_rows(data.frame(time = i, geo = filter(data_analysis_women, time == i)$geo[j], cluster=as.factor(fit$cluster[j])))
+}
+
+require(forcats)
+map6 <- map6 %>% mutate(cluster = ifelse(time %in% c(2003, 2005, 2008:2010, 2012, 2016), fct_rev(cluster), cluster))
+
+map6 <- map6 %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+
+ggplot(map6) + 
+  geom_sf(aes(fill = factor(cluster)), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Clustering EU regions (NUTS2) by Female Death Rates in 2010") +
+  labs(fill = "Cluster")
+```
+
+```{r}
+ggplot(map6) + 
+  geom_sf(aes(fill = factor(cluster)), color = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  labs(title = 'Clustering EU regions (NUTS2) by Female Death Rates {current_frame}', fill = "Cluster") +
+  transition_manual(time)
+
+```
+
+Less stable compared to men. Eastern poland seems to behave as a western region, while mid Scotland as eastern.
+
+## Mortality rate improvement
+
+Men 
+
+```{r}
+data_analysis_men_impr <- data_analysis_men %>% 
+  group_by(geo) %>% 
+  mutate_at(vars(starts_with("M_")), ~(ifelse(is.finite(-log(lag(.)/.)), -log(lag(.)/.), 0))) %>%
+  ungroup() %>%
+  mutate(ave_impr = rowMeans(select(., starts_with("M_")), na.rm = FALSE)) %>% 
+  select(geo, time, ave_impr)
+
+
+map7 <- data_analysis_men_impr %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+ggplot(map7) + 
+  geom_sf(aes(fill = ave_impr), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Male Death Rate Change by EU region (NUTS2) by Year") +
+  labs(fill = "Average Male Death Rate Change")
+
+```
+
+Women
+
+```{r}
+data_analysis_women_impr <- data_analysis_women %>% 
+  group_by(geo) %>% 
+  mutate_at(vars(starts_with("F_")), ~(ifelse(is.finite(-log(lag(.)/.)), -log(lag(.)/.), 0))) %>%
+  ungroup() %>%
+  mutate(ave_impr = rowMeans(select(., starts_with("F_")), na.rm = FALSE)) %>% 
+  select(geo, time, ave_impr)
+
+
+map8 <- data_analysis_women_impr %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+ggplot(map8) + 
+  geom_sf(aes(fill = ave_impr), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Female Death Rate Change by EU region (NUTS2) by Year") +
+  labs(fill = "Average Female Death Rate Change")
+```
+
+Clustering men
+
+```{r}
+data_analysis_men_impr <- data_analysis_men %>% 
+  group_by(geo) %>% 
+  mutate_at(vars(starts_with("M_")), ~(ifelse(is.finite(-log(lag(.)/.)), -log(lag(.)/.), 0))) %>%
+  filter(time > 2002) %>%
+  ungroup()
+
+for (i in unique(data_analysis_men_impr$time)) {
+  
+set.seed(123456789)
+
+  data_analysis_men_impr %>%
+  filter(time == i) %>%
+  select(M_Y00:`M_Y85+`) %>%
+  scale() %>%
+  wssplot(., nc=25)
+}
+
+map9 <- data.frame()
+
+for (i in unique(data_analysis_men_impr$time)) {
+  
+set.seed(123456789)
+
+fit <- data_analysis_men_impr %>%
+  filter(time == i) %>%
+  select(M_Y00:`M_Y85+`) %>%
+  scale() %>%
+  kmeans(., centers=2, nstart=10)
+
+j <- order(fit$cluster)
+
+map9 <- map9 %>% bind_rows(data.frame(time = i, geo = filter(data_analysis_men_impr, time == i)$geo[j], cluster=fit$cluster[j]))
+}
+
+map9 <- map9 %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+
+ggplot(map9) + 
+  geom_sf(aes(fill = factor(cluster)), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Clustering EU regions (NUTS2) by Male Death Rate Changes 2002 - 2016") +
+  labs(fill = "Cluster")
+```
+
+
+Clustering women
+
+```{r}
+data_analysis_women_impr <- data_analysis_women %>% 
+  group_by(geo) %>% 
+  mutate_at(vars(starts_with("F_")), ~(ifelse(is.finite(-log(lag(.)/.)), -log(lag(.)/.), 0))) %>%
+  filter(time > 2002) %>%
+  ungroup()
+
+for (i in unique(data_analysis_women_impr$time)) {
+  
+set.seed(123456789)
+
+  data_analysis_women_impr %>%
+  filter(time == i) %>%
+  select(F_Y00:`F_Y85+`) %>%
+  scale() %>%
+  wssplot(., nc=25)
+}
+
+map10 <- data.frame()
+
+for (i in unique(data_analysis_women_impr$time)) {
+  
+set.seed(123456789)
+
+fit <- data_analysis_women_impr %>%
+  filter(time == i) %>%
+  select(F_Y00:`F_Y85+`) %>%
+  scale() %>%
+  kmeans(., centers=2, nstart=10)
+
+j <- order(fit$cluster)
+
+map10 <- map10 %>% bind_rows(data.frame(time = i, geo = filter(data_analysis_women_impr, time == i)$geo[j], cluster=fit$cluster[j]))
+}
+
+map10 <- map10 %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+
+ggplot(map10) + 
+  geom_sf(aes(fill = factor(cluster)), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  facet_wrap(. ~ time, ncol = 5) +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Clustering EU regions (NUTS2) by Female Death Rate Changes 2002 - 2016") +
+  labs(fill = "Cluster")
+```
+
+## Averaging the years
+
+Men
+
+```{r}
+data_analysis_men_impr <- data_analysis_men %>% 
+  group_by(geo) %>% 
+  mutate_at(vars(starts_with("M_")), ~(ifelse(is.finite(-log(lag(.)/.)), -log(lag(.)/.), 0))) %>%
+  ungroup() %>%
+  mutate(ave_impr = rowMeans(select(., starts_with("M_")), na.rm = TRUE)) %>% 
+  filter(time > 2002) %>%
+  select(geo, time, ave_impr) %>%
+  spread(key = time, value = ave_impr) %>%
+  mutate(ave_impr = rowSums(select(., starts_with("20")), na.rm = TRUE)) %>% 
+  select(geo, ave_impr)
+
+map11 <- data_analysis_men_impr %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+ggplot(map11) + 
+  geom_sf(aes(fill = ave_impr), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  #facet_wrap(. ~ time, ncol = 5) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Cumulative Male Death Rate Change by EU region (NUTS2) during 2002 - 2016") +
+  labs(fill = "Cumulative Male Death Rate Change")
+
+```
+
+Women
+
+Averaging the years
+
+```{r}
+data_analysis_women_impr <- data_analysis_women %>% 
+  group_by(geo) %>% 
+  mutate_at(vars(starts_with("F_")), ~(ifelse(is.finite(-log(lag(.)/.)), -log(lag(.)/.), 0))) %>%
+  ungroup() %>%
+  mutate(ave_impr = rowMeans(select(., starts_with("F_")), na.rm = T)) %>% 
+  filter(time > 2002) %>%
+  select(geo, time, ave_impr) %>%
+  spread(key = time, value = ave_impr) %>%
+  mutate(ave_impr = rowSums(select(., starts_with("20")), na.rm = T)) %>% 
+  select(geo, ave_impr)
+
+map12 <- data_analysis_women_impr %>% inner_join(gisco, ., by = c("NUTS_ID" = "geo"))
+
+ggplot(map12) + 
+  geom_sf(aes(fill = ave_impr), colour = "transparent") +
+  geom_sf(fill = "transparent", size = 0.1, data = gisco0) +
+  coord_sf(xlim = c(-10, +30), ylim = c(35, 70)) +
+  #facet_wrap(. ~ time, ncol = 5) +
+  scale_fill_viridis() +
+  theme(panel.grid.major = element_line(colour = 'transparent'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  ggtitle("Cumulative Female Death Rate Change by EU region (NUTS2) during 2002 - 2016") +
+  labs(fill = "Cumulative Female Death Rate Change")
+
+```
+
+

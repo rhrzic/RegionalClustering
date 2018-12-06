@@ -1,0 +1,2 @@
+"0","data_analysis_T <- data_analysis_wide %>% select(geo, time, starts_with(""T_""))"
+"0","data_analysis_T <- data_analysis_T %>% mutate(ave_Mx = rowMeans(select(., starts_with(""T_"")), na.rm = TRUE)) %>% select(geo, time, ave_Mx)"

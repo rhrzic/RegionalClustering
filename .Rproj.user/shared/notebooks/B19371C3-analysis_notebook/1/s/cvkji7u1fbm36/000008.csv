@@ -1,0 +1,2 @@
+"0","ggplot(Missing, aes(x=time, y=geo)) +"
+"0","  geom_raster(aes(fill = available))"

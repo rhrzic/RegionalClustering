@@ -1,0 +1,29 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1541763413763.000,
+    "dirty" : false,
+    "encoding" : "",
+    "folds" : "",
+    "hash" : "0",
+    "id" : "5FE77A7B",
+    "lastKnownWriteTime" : 26740414852104272,
+    "last_content_update" : 1541763413763,
+    "path" : null,
+    "project_path" : null,
+    "properties" : {
+        "cacheKey" : "1CC86595",
+        "caption" : "data_analysis_women_impr",
+        "contentUrl" : "grid_resource/gridviewer.html?env=&obj=data_analysis_women_impr&cache_key=1CC86595",
+        "displayedObservations" : 276,
+        "environment" : "",
+        "object" : "data_analysis_women_impr",
+        "preview" : 0,
+        "totalObservations" : 276,
+        "variables" : 2
+    },
+    "relative_order" : 3,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_dataframe"
+}

@@ -1,0 +1,2 @@
+"0","Missing <- data_analysis %>% group_by(geo, time) %>% summarise(available = sum(!is.na(values)) / length(values)) %>% arrange(desc(available))"
+"0","Missing %>% group_by(time) %>% summarise(regions = sum(available) / 276) %>% print(n = 27)"

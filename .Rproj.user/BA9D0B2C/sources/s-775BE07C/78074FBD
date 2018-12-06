@@ -1,0 +1,24 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1541748596416.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "0",
+    "id" : "78074FBD",
+    "lastKnownWriteTime" : 1541770761,
+    "last_content_update" : 1541770720407,
+    "path" : "I:/My Documents/PhD/PhD_RegionalClustering/analysis/analysis_notebook.Rmd",
+    "project_path" : "analysis/analysis_notebook.Rmd",
+    "properties" : {
+        "chunk_output_type" : "inline",
+        "cursorPosition" : "691,0",
+        "last_setup_crc32" : "B1043F084c14d95",
+        "scrollLine" : "0"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_markdown"
+}
